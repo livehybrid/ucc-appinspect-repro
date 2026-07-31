@@ -1,0 +1,7 @@
+output/
+dist/
+*.tar.gz
+*.tgz
+report.json
+__pycache__/
+*.pyc
