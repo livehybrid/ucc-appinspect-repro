@@ -86,25 +86,76 @@ jobs:
           name: dist
           path: dist/*.tar.gz
 
-  # The usual livehybrid reusable pipeline (wraps Splunk's official
-  # splunk/appinspect-cli-action). `future` is INCLUDED here on purpose — it is the tag
-  # group that surfaces the deprecations this repo exists to demonstrate.
-  appinspect-future:
-    name: AppInspect CLI (cloud + future) — expected to fail
+  # THE REPRO. Installs the LATEST AppInspect directly and fails on any future-failure.
+  # This is deliberately not the shared action — see `appinspect-shared-pipeline` below.
+  appinspect-latest:
+    name: AppInspect (latest, direct) — expected to FAIL
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install latest splunk-appinspect
+        run: |
+          pip install --upgrade splunk-appinspect
+          python -c "import importlib.metadata as m; v=m.version('splunk-appinspect'); print(f'splunk-appinspect {v}'); open('$GITHUB_STEP_SUMMARY','a').write(f'AppInspect {v}\n')"
+
+      - name: Inspect
+        run: |
+          splunk-appinspect inspect dist/TA_ucc_mako_repro.tar.gz \
+            --mode precert --data-format json --output-file report.json \
+            --max-messages all --skip-trusted-libraries-update || true
+
+      - name: Fail on future-failures (the point of this repo)
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          d = json.load(open("report.json"))
+          summary = d.get("summary", {})
+          print("summary:", json.dumps(summary))
+          bad = []
+          for rep in d.get("reports", []):
+              for g in rep.get("groups", []):
+                  for c in g.get("checks", []):
+                      if c.get("result") in ("failure", "error", "future_failure"):
+                          msg = ""
+                          for m in c.get("messages", [])[:1]:
+                              msg = " ".join(str(m.get("message", "")).split())[:300]
+                          bad.append((c["result"], c["name"], msg))
+          lines = [f"### AppInspect findings in stock ucc-gen output\n", f"`{json.dumps(summary)}`\n"]
+          for r, n, m in sorted(bad):
+              print(f"[{r}] {n}\n    {m}")
+              lines.append(f"- **{r}** `{n}` — {m}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write("\n".join(lines) + "\n")
+          if any(r == "future_failure" for r, _, _ in bad):
+              sys.exit("FAILING ON PURPOSE: stock ucc-gen output has future-failures (see above).")
+          print("No future-failures — the toolchain may have been fixed. Update this repo.")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: appinspect-report
+          path: report.json
+
+  # CONTRAST: the usual shared livehybrid pipeline passes the SAME package, even with the
+  # `future` tag, because livehybrid/appinspect-cli-action pins splunk-appinspect==4.2.1
+  # in its requirements.txt. 4.2.1 does not contain check_for_custom_mako_templates at all,
+  # so the pipeline cannot see the finding above. That pin is the reason this went
+  # unnoticed — every repo using this pipeline is vetted against a stale AppInspect.
+  appinspect-shared-pipeline:
+    name: AppInspect via shared pipeline (pinned 4.2.1) — passes, masking the issue
     needs: build
     uses: livehybrid/deploy-splunk-app-action/.github/workflows/appinspect-cli.yml@main
     with:
       tags: "cloud,future"
-    secrets:
-      token: ${{ secrets.GITHUB_TOKEN }}
-
-  # Control: without `future`, the same package is clean apart from aarch64, proving the
-  # findings above are specifically the future-dated deprecation checks.
-  appinspect-cloud:
-    name: AppInspect CLI (cloud only) — control
-    needs: build
-    uses: livehybrid/deploy-splunk-app-action/.github/workflows/appinspect-cli.yml@main
-    with:
-      tags: "cloud"
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}

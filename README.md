@@ -90,17 +90,35 @@ future-failures in 4.2.1 (tagged `Tags.FUTURE`, emitting a warning plus
 `FailMessage(release_version=4.3.0)`) and are now unconditional failures. Eleven of them
 are `tools.conf` rules. The same escalation is the expected path for these three.
 
+## A second finding: the shared CI pipeline cannot see any of this
+
+The first CI run of this repo passed — including the `future` tag group. That is not
+because the findings are absent; it is because
+[`livehybrid/appinspect-cli-action`](https://github.com/livehybrid/appinspect-cli-action)
+pins its scanner in `requirements.txt`:
+
+```
+splunk-appinspect==4.2.1
+```
+
+AppInspect 4.2.1 does not contain `check_for_custom_mako_templates` — the check did not
+exist until 4.3.0 — so the pipeline cannot report it. Every repository using that shared
+action is being vetted against a scanner that is releases behind, and will keep passing
+until the pin moves.
+
+The workflow in this repo therefore runs AppInspect **twice**, and the contrast is the
+point:
+
+| Job | Scanner | Result |
+| --- | --- | --- |
+| `appinspect-latest` | latest, installed directly | **fails** on the future-failures above |
+| `appinspect-shared-pipeline` | shared action, pinned 4.2.1 | passes, masking them |
+
 ## What this repo does
 
-The workflow builds with the **latest, unpinned** ucc-gen and runs the AppInspect CLI
-twice via the shared `livehybrid/deploy-splunk-app-action` pipeline (which wraps Splunk's
-official `splunk/appinspect-cli-action`):
-
-- `cloud,future` — expected to fail, demonstrating the findings above
-- `cloud` — control, clean apart from aarch64
-
-It also asserts directly that ucc-gen emitted `appserver/templates/base.html` and left
-`python.required` out of the generated conf files, so the findings cannot be attributed
-to anything in this repository.
+It builds with the **latest, unpinned** ucc-gen, then asserts directly that ucc-gen
+emitted `appserver/templates/base.html` and left `python.required` out of the generated
+conf files — so the findings cannot be attributed to anything in this repository — and
+finally runs the two AppInspect scans above.
 
 It re-runs weekly, so if either toolchain fixes this the build goes green on its own.
